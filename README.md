@@ -37,7 +37,6 @@ runchecker plans to support the following type hints in the future:
 - TypeVar
 - Literal
 - Annotated
-- Protocol
 - and more to come!
 
 ## Validating a Custom Generic
