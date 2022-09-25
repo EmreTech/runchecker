@@ -7,6 +7,7 @@ from collections import OrderedDict
 from typing import (
     Any,
     Callable,
+    Dict,
     Generic,
     Iterator,
     Mapping,
@@ -16,12 +17,27 @@ from typing import (
     TypeVar,
     Union,
     cast,
-    get_args,
-    get_origin,
 )
 
 from .errors import WrongType
 from .protocols import Validator
+
+if sys.version_info >= (3, 11):
+    from typing import TypedDict, Required, NotRequired, is_typeddict
+
+    valid_typed_dicts = (TypedDict,)
+elif sys.version_info >= (3, 8):
+    from typing import TypedDict as OldTypedDict, _TypedDict as _OldTypedDict
+    from typing_extensions import TypedDict, _TypedDict, Required, NotRequired
+
+    valid_typed_dicts = (TypedDict, OldTypedDict)
+
+    def is_typeddict(tp) -> bool:
+        return isinstance(tp, type(_TypedDict)) or isinstance(tp, type(_OldTypedDict)) 
+else:
+    from typing_extensions import TypedDict, Required, NotRequired, is_typeddict
+
+    valid_typed_dicts = (TypedDict,)
 
 if sys.version_info >= (3, 10):
     from types import UnionType
@@ -29,6 +45,21 @@ if sys.version_info >= (3, 10):
     union_types = (Union, UnionType)
 else:
     union_types = (Union,)
+
+if sys.version_info >= (3, 9):
+    from typing import Annotated
+else:
+    from typing_extensions import Annotated
+
+if sys.version_info >= (3, 8):
+    from typing import Literal
+else:
+    from typing_extensions import Literal
+
+if sys.version_info >= (3, 8):
+    from typing import get_args, get_origin
+else:
+    from typing_extensions import get_args, get_origin
 
 OT = TypeVar("OT")
 
@@ -39,7 +70,7 @@ def make_validator(func: Callable[[Any, Any], Iterator[Any]]):
     def wrapper(type_hint: Any, value: Any) -> None:
         try:
             res = [r for r in func(type_hint, value)]
-        except WrongType:
+        except (WrongType, TypeError):
             res = []
         
         if not res:
@@ -126,7 +157,7 @@ def validate_callable(type_hint: Any, value: Any) -> Iterator[Callable[..., Any]
         callable_args, callable_return = get_args(type_hint)
         value_signature = inspect.signature(value)
 
-        assert isinstance(callable_args, list) or callable_args is ..., f"Invalid callable alias {repr(type_hint)}!"
+        assert isinstance(callable_args, abc.Sequence) or callable_args is ..., f"Invalid callable alias {repr(type_hint)}!"
 
         if callable_args is ... and value_signature.return_annotation is callable_return:
             yield cast(abc.Callable, value)
@@ -154,6 +185,64 @@ def validate_generic(type_hint: Any, value: Any) -> Iterator[Any]:
             yield value
             return
 
+@make_validator
+def validate_literal(type_hint: Any, value: Any) -> Iterator[Any]:
+    literal_args = get_args(type_hint)
+
+    if value in literal_args:
+        yield value
+        return
+
+@make_validator
+def validate_typed_dict(type_hint: Any, value: Any) -> Iterator[Dict[str, Any]]:
+    typed_dict = cast(TypedDict, type_hint)
+    value_dict: Dict[str, Any] = cast(dict, value)
+
+    for k in value_dict.keys():
+        validate(str, k)
+
+    if sys.version_info >= (3, 9):
+        if not typed_dict.__optional_keys__ and value_dict.keys() == typed_dict.__annotations__.keys():
+            for k, v in typed_dict.__annotations__:
+                v_from_dict = value_dict[k]
+                validate(v, v_from_dict)
+
+            yield value_dict
+            return
+        elif typed_dict.__optional_keys__:
+            for k, v in typed_dict.__annotations__:
+                try:
+                    v_from_dict = value_dict[k]
+                except KeyError:
+                    if k in typed_dict.__optional_keys__:
+                        continue
+                    else:
+                        raise TypeError(f"This dict provided does not match the Typed Dict!")
+
+                validate(v, v_from_dict)
+
+            yield value_dict
+            return
+    else:
+        if typed_dict.__total__ and value_dict.keys() == typed_dict.__annotations__.keys():
+            for k, v in typed_dict.__annotations__:
+                v_from_dict = value_dict[k]
+                validate(v, v_from_dict)
+
+            yield value_dict
+            return
+        elif not typed_dict.__total__:
+            for k, v in typed_dict.__annotations__:
+                try:
+                    v_from_dict = value_dict[k]
+                except KeyError:
+                    pass
+
+                validate(v, v_from_dict)
+
+            yield value_dict
+            return
+
 def make_subclass_condition(type_to_check: Union[type, Tuple[type, ...]]) -> Callable[[Any], bool]:
     def wrapper(t: Any):
         if (origin := get_origin(t)) is not None and isinstance(origin, type):
@@ -163,9 +252,11 @@ def make_subclass_condition(type_to_check: Union[type, Tuple[type, ...]]) -> Cal
 
 all_validators: Mapping[Callable[[Any], bool], Callable[[Any, Any], None]] = OrderedDict(
     {
+        (lambda t: is_typeddict(get_origin(t))): validate_typed_dict,
         make_subclass_condition(abc.Mapping): validate_mapping_alias,
         make_subclass_condition(tuple): validate_tuple_alias,
         make_subclass_condition(abc.Sequence): validate_sequence_alias,
+        (lambda t: get_origin(t) is Literal): validate_literal,
         (lambda t: get_origin(t) in union_types): validate_union,
         make_subclass_condition(Generic): validate_generic,
         (lambda t: t is Any): validate_any,
