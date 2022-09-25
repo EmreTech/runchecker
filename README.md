@@ -30,13 +30,13 @@ runchecker currently supports the following type hints:
 - tuple
 - Union
 - Generic
+- TypedDict
+- Literal
+- Annotated
 
 runchecker plans to support the following type hints in the future:
 
-- TypedDict
 - TypeVar
-- Literal
-- Annotated
 - and more to come!
 
 ## Validating a Custom Generic
