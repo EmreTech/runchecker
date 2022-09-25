@@ -10,6 +10,11 @@ __all__ = ("check",)
 def check(func: types.FunctionType) -> Callable[..., Any]:
     assert isinstance(func, types.FunctionType), f"obj parameter must be a function!"
 
+    # functions with the @no_type_check decorator should not be using this
+    # decorator anyways
+    if getattr(func, "__no_type_check__", False):
+        return func
+
     func_sig = inspect.signature(func)
     type_hints: Dict[str, Any] = {}
     for param in func_sig.parameters.values():
