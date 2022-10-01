@@ -3,6 +3,8 @@ import functools
 from typing import Any, Callable, Dict
 import inspect
 
+from runchecker.errors import InvalidParameter, WrongType
+
 from .validators import validate
 
 __all__ = ("check",)
@@ -25,7 +27,7 @@ def check(func: types.FunctionType) -> Callable[..., Any]:
         type_hints[param.name] = anno
 
         if param.default is not param.empty:
-            validate(anno, param.default)
+            validate(anno, param.default, param.name)
 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -36,18 +38,21 @@ def check(func: types.FunctionType) -> Callable[..., Any]:
 
             if param.kind == param.VAR_POSITIONAL:
                 for value in arg:
-                    validate(type_anno, value)
+                    validate(type_anno, value, param.name)
             elif param.kind == param.VAR_KEYWORD:
                 for _, value in arg.items():
-                    validate(type_anno, value)
+                    validate(type_anno, value, param.name)
             else:
-                validate(type_anno, arg)
+                validate(type_anno, arg, param.name)
 
         result = func(*binded_args.args, **binded_args.kwargs)
 
         return_type = func_sig.return_annotation
         if return_type is not func_sig.empty:
-            validate(return_type, result)
+            try:
+                validate(return_type, result)
+            except InvalidParameter:
+                raise WrongType(value=result, type_hint=return_type)
 
         return result
 

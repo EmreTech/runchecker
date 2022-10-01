@@ -9,8 +9,8 @@ from typing import (
     Callable,
     Dict,
     Generic,
-    Iterator,
     Mapping,
+    Optional,
     Sequence,
     Tuple, 
     Type,
@@ -19,7 +19,7 @@ from typing import (
     cast,
 )
 
-from .errors import WrongType
+from .errors import WrongType, InvalidParameter
 from .protocols import Validator
 
 from typing_extensions import (
@@ -42,47 +42,48 @@ OT = TypeVar("OT")
 
 __all__ = ("validate",)
 
-def make_validator(func: Callable[[Any, Any], Iterator[Any]]):
+def make_validator(func: Callable[[Any, Any], Optional[Any]]):
     @functools.wraps(func)
-    def wrapper(type_hint: Any, value: Any) -> None:
+    def wrapper(type_hint: Any, value: Any, parameter: Optional[str]) -> None:
         try:
-            res = [r for r in func(type_hint, value)]
+            res = func(type_hint, value)
         except (WrongType, TypeError):
-            res = []
-        
+            res = None
+
         if not res:
-            raise WrongType(value=value, type_hint=type_hint)
+            if parameter is not None:
+                raise InvalidParameter(parameter=parameter, value=value, type_hint=type_hint)
+            else:
+                raise WrongType(value=value, type_hint=type_hint)
     return wrapper
 
 @make_validator
-def validate_any(type_hint: Any, value: Any) -> Iterator[Any]:
-    yield value
+def validate_any(type_hint: Any, value: Any) -> Any:
+    return value
 
 @make_validator
-def validate_object(type_hint: Type[OT], value: Any) -> Iterator[OT]:
+def validate_object(type_hint: Type[OT], value: Any) -> Optional[OT]:
     if isinstance(value, type_hint):
-        yield value
-        return
+        return value
 
+# we can't return None here because it's confusing to our decorator
 @make_validator
-def validate_none(type_hint: Any, value: Any) -> Iterator[None]:
+def validate_none(type_hint: Any, value: Any) -> Optional[bool]:
     if value is None:
-        yield value
-        return
+        return True
 
 @make_validator
-def validate_union(type_hint: Any, value: Any) -> Iterator[Any]:
+def validate_union(type_hint: Any, value: Any) -> Optional[Any]:
     for t in get_args(type_hint):
         try:
             validate(t, value)
         except WrongType:
             continue
         else:
-            yield value
-            return
+            return value
 
 @make_validator
-def validate_mapping_alias(type_hint: Any, value: Any) -> Iterator[Mapping[Any, Any]]:
+def validate_mapping_alias(type_hint: Any, value: Any) -> Optional[Mapping[Any, Any]]:
     key_type, value_type = get_args(type_hint)
     value_dict = cast(abc.Mapping, value)
 
@@ -90,7 +91,7 @@ def validate_mapping_alias(type_hint: Any, value: Any) -> Iterator[Mapping[Any, 
         validate(key_type, k)
         validate(value_type, v)
 
-    yield value_dict
+    return value_dict
 
 _no_repeating_tuple_arg = object()
 
@@ -106,7 +107,7 @@ def _get_repeating_tuple_arg(alias: Any) -> Any:
     return _no_repeating_tuple_arg
 
 @make_validator
-def validate_tuple_alias(type_hint: Any, value: Any) -> Iterator[Tuple[Any, ...]]:
+def validate_tuple_alias(type_hint: Any, value: Any) -> Optional[Tuple[Any, ...]]:
     tuple_args = get_args(type_hint)
     repeating_arg = _get_repeating_tuple_arg(type_hint)
     tuple_args = tuple([v for v in tuple_args if v is not ...])
@@ -115,21 +116,20 @@ def validate_tuple_alias(type_hint: Any, value: Any) -> Iterator[Tuple[Any, ...]
     if (repeating_arg is _no_repeating_tuple_arg and len(value_tuple) == len(tuple_args)) or repeating_arg is not _no_repeating_tuple_arg:
         for v_type, v_value in itertools.zip_longest(tuple_args, value_tuple, fillvalue=repeating_arg):
             validate(v_type, v_value)
-        yield value_tuple
-        return
+        return value_tuple
 
 @make_validator
-def validate_sequence_alias(type_hint: Any, value: Any) -> Iterator[Sequence[Any]]:
+def validate_sequence_alias(type_hint: Any, value: Any) -> Optional[Sequence[Any]]:
     value_arg = get_args(type_hint)
     value_sequence = cast(abc.Sequence, value)
 
     for v in value_sequence:
         validate(value_arg, v)
 
-    yield value_sequence
+    return value_sequence
 
 @make_validator
-def validate_callable(type_hint: Any, value: Any) -> Iterator[Callable[..., Any]]:
+def validate_callable(type_hint: Any, value: Any) -> Optional[Callable[..., Any]]:
     if callable(value):
         callable_args, callable_return = get_args(type_hint)
         value_signature = inspect.signature(value)
@@ -137,17 +137,15 @@ def validate_callable(type_hint: Any, value: Any) -> Iterator[Callable[..., Any]
         assert isinstance(callable_args, abc.Sequence) or callable_args is ..., f"Invalid callable alias {repr(type_hint)}!"
 
         if callable_args is ... and value_signature.return_annotation is callable_return:
-            yield cast(abc.Callable, value)
-            return
+            return cast(abc.Callable, value)
 
         elif callable_args is not ... and len(value_signature.parameters) == len(callable_args):
             value_signature_param_annos = [p.annotation for p in value_signature.parameters.values()]
             if value_signature_param_annos == callable_args and value_signature.return_annotation is callable_return:
-                yield cast(abc.Callable, value)
-                return
+                return cast(abc.Callable, value)
 
 @make_validator
-def validate_generic(type_hint: Any, value: Any) -> Iterator[Any]:
+def validate_generic(type_hint: Any, value: Any) -> Optional[Any]:
     origin = get_origin(type_hint)
     if origin and isinstance(value, origin):
         if issubclass(origin, Validator):
@@ -156,22 +154,19 @@ def validate_generic(type_hint: Any, value: Any) -> Iterator[Any]:
             except:
                 raise
             else:
-                yield value
-                return
+                return value
         else:
-            yield value
-            return
+            return value
 
 @make_validator
-def validate_literal(type_hint: Any, value: Any) -> Iterator[Any]:
+def validate_literal(type_hint: Any, value: Any) -> Optional[Any]:
     literal_args = get_args(type_hint)
 
     if value in literal_args:
-        yield value
-        return
+        return value
 
 @make_validator
-def validate_typed_dict(type_hint: Any, value: Any) -> Iterator[Dict[str, Any]]:
+def validate_typed_dict(type_hint: Any, value: Any) -> Optional[Dict[str, Any]]:
     typed_dict = cast(TypedDict, type_hint)
     value_dict: Dict[str, Any] = cast(dict, value)
 
@@ -184,8 +179,7 @@ def validate_typed_dict(type_hint: Any, value: Any) -> Iterator[Dict[str, Any]]:
                 v_from_dict = value_dict[k]
                 validate(v, v_from_dict)
 
-            yield value_dict
-            return
+            return value_dict
         elif typed_dict.__optional_keys__:
             for k, v in typed_dict.__annotations__.items():
                 try:
@@ -198,16 +192,14 @@ def validate_typed_dict(type_hint: Any, value: Any) -> Iterator[Dict[str, Any]]:
 
                 validate(v, v_from_dict)
 
-            yield value_dict
-            return
+            return value_dict
     else:
         if typed_dict.__total__ and value_dict.keys() == typed_dict.__annotations__.keys():
             for k, v in typed_dict.__annotations__:
                 v_from_dict = value_dict[k]
                 validate(v, v_from_dict)
 
-            yield value_dict
-            return
+            return value_dict
         elif not typed_dict.__total__:
             for k, v in typed_dict.__annotations__:
                 try:
@@ -217,11 +209,10 @@ def validate_typed_dict(type_hint: Any, value: Any) -> Iterator[Dict[str, Any]]:
 
                 validate(v, v_from_dict)
 
-            yield value_dict
-            return
+            return value_dict
 
 @make_validator
-def validate_annotated(type_hint: Any, value: Any) -> Iterator[Any]:
+def validate_annotated(type_hint: Any, value: Any) -> Optional[Any]:
     annotated_type = get_args(type_hint)[0]
 
     try:
@@ -229,7 +220,7 @@ def validate_annotated(type_hint: Any, value: Any) -> Iterator[Any]:
     except:
         raise
     else:
-        yield value
+        return value
 
 def make_subclass_condition(type_to_check: Union[type, Tuple[type, ...]]) -> Callable[[Any], bool]:
     def wrapper(t: Any):
@@ -238,7 +229,7 @@ def make_subclass_condition(type_to_check: Union[type, Tuple[type, ...]]) -> Cal
         return False
     return wrapper
 
-all_validators: Mapping[Callable[[Any], bool], Callable[[Any, Any], None]] = OrderedDict(
+all_validators: Mapping[Callable[[Any], bool], Callable[[Any, Any, Optional[str]], None]] = OrderedDict(
     {
         (lambda t: is_typeddict(t)): validate_typed_dict,
         make_subclass_condition(abc.Mapping): validate_mapping_alias,
@@ -254,7 +245,7 @@ all_validators: Mapping[Callable[[Any], bool], Callable[[Any, Any], None]] = Ord
     }
 )
 
-def validate(type_hint: Any, value: Any):
+def validate(type_hint: Any, value: Any, parameter: Optional[str] = None):
     for condition, validator in all_validators.items():
         if condition(type_hint):
-            return validator(type_hint, value)
+            return validator(type_hint, value, parameter)
