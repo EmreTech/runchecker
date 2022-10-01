@@ -222,7 +222,7 @@ def validate_typed_dict(type_hint: Any, value: Any) -> Iterator[Dict[str, Any]]:
 
 @make_validator
 def validate_annotated(type_hint: Any, value: Any) -> Iterator[Any]:
-    annotated_type, _ = get_args(type_hint)
+    annotated_type = get_args(type_hint)[0]
 
     try:
         validate(annotated_type, value)
