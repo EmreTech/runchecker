@@ -15,7 +15,7 @@ A dynamic, runtime type checker for Python 3.7+!
 >>> hey_there(487, "Hello")
 Traceback (most recent call last):
     ...
-runchecker.errors.WrongType: Invalid value 487 (type int) for type hint str!
+runchecker.errors.InvalidParameter: Parameter name with value 487 (type int) is incompatible with str!
 ```
 
 ## What Currently Works
@@ -37,6 +37,7 @@ runchecker currently supports the following type hints:
 runchecker plans to support the following type hints in the future:
 
 - TypeVar
+- Forward References
 - and more to come!
 
 ## Validating a Custom Generic
